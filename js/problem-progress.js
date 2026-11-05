@@ -1,6 +1,7 @@
 (() => {
-  const KEY = "physics-olympiad-solved-v3";
+  const KEY = "physics-olympiad-status-v1";
   const LEGACY_KEYS = [
+    "physics-olympiad-solved-v3",
     ["mol", "dova-physics-olympiad-solved-v2"].join(""),
     ["mol", "dova-thermodynamics-solved-v1"].join("")
   ];
@@ -8,34 +9,161 @@
   const canonicalById = Object.fromEntries(PROBLEMS.map(p => [p.id, p.canonical || p.id]));
   const canonical = id => canonicalById[id] || id;
   const allIds = new Set(PROBLEMS.map(p => p.canonical || p.id));
+  const STATES = ["not-done", "attempted", "done"];
+  const STATE_LABELS = {"not-done":"Not done", attempted:"Attempted", done:"Done"};
+
   function load() {
     try {
       let raw = JSON.parse(localStorage.getItem(KEY) || "null");
-      if (!Array.isArray(raw)) {
-        const old = LEGACY_KEYS.map(key => {
-          try { return JSON.parse(localStorage.getItem(key) || "[]"); }
-          catch (_) { return []; }
-        }).find(items => Array.isArray(items) && items.length) || [];
-        raw = old;
-        if (raw.length) localStorage.setItem(KEY, JSON.stringify(raw));
+      if (raw && !Array.isArray(raw) && typeof raw === "object") {
+        return new Map(Object.entries(raw)
+          .map(([id,state]) => [canonical(id), state])
+          .filter(([id,state]) => allIds.has(id) && STATES.includes(state) && state !== "not-done"));
       }
-      return new Set(raw.map(canonical).filter(x => allIds.has(x)));
-    } catch (_) { return new Set(); }
+      const solved = (Array.isArray(raw) ? raw : LEGACY_KEYS.map(key => {
+        try { return JSON.parse(localStorage.getItem(key) || "[]"); }
+        catch (_) { return []; }
+      }).find(items => Array.isArray(items) && items.length) || [])
+        .map(canonical).filter(id => allIds.has(id));
+      const statuses = new Map(solved.map(id => [id, "done"]));
+      if (statuses.size) save(statuses);
+      return statuses;
+    } catch (_) { return new Map(); }
   }
-  function save(set) { localStorage.setItem(KEY, JSON.stringify([...set].sort())); }
+  function save(statuses) {
+    const stored = Object.fromEntries([...statuses.entries()]
+      .filter(([,state]) => state !== "not-done")
+      .sort(([a],[b]) => a.localeCompare(b)));
+    localStorage.setItem(KEY, JSON.stringify(stored));
+  }
+  const statusOf = (statuses,id) => statuses.get(canonical(id)) || "not-done";
   const pct=(n,d)=>d?Math.round(100*n/d):0;
   const setText=(sel,val)=>document.querySelectorAll(sel).forEach(el=>el.textContent=val);
-  function fill(el,items,solved) { const n=items.filter(p=>solved.has(p.canonical || p.id)).length, pc=pct(n,items.length); el.querySelectorAll("[data-local-solved]").forEach(x=>x.textContent=n); el.querySelectorAll("[data-local-total]").forEach(x=>x.textContent=items.length); el.querySelectorAll("[data-local-percent]").forEach(x=>x.textContent=pc+"%"); el.querySelectorAll("[data-local-bar]").forEach(x=>x.style.width=pc+"%"); }
-  function updateProgress(solved) {
-    const done=PROBLEMS.filter(p=>solved.has(p.canonical || p.id)).length; setText("[data-progress-solved]",done); setText("[data-progress-total]",PROBLEMS.length); setText("[data-progress-percent]",pct(done,PROBLEMS.length)+"%"); document.querySelectorAll("[data-progress-bar]").forEach(el=>el.style.width=pct(done,PROBLEMS.length)+"%");
-    document.querySelectorAll("[data-progress-subject]").forEach(el=>fill(el,PROBLEMS.filter(p=>p.subject===el.dataset.progressSubject),solved));
-    document.querySelectorAll("[data-progress-topic]").forEach(el=>{const [s,t]=el.dataset.progressTopic.split("/");fill(el,PROBLEMS.filter(p=>p.subject===s&&p.topic===t),solved);});
-    document.querySelectorAll("[data-progress-subtopic]").forEach(el=>{const [s,t,st]=el.dataset.progressSubtopic.split("/");fill(el,PROBLEMS.filter(p=>p.subject===s&&p.topic===t&&p.subtopic===st),solved);});
+  function counts(items,statuses) {
+    return items.reduce((result,p) => {
+      const state=statusOf(statuses,p.canonical || p.id);
+      if (state === "done") result.done++;
+      if (state === "attempted") result.attempted++;
+      return result;
+    }, {done:0,attempted:0});
   }
-  function applyTableFilter(bank, solved) { const search=(bank.querySelector("[data-filter-search]")?.value||"").trim().toLowerCase(), subject=bank.querySelector("[data-filter-subject]")?.value||"", diff=bank.querySelector("[data-filter-difficulty]")?.value||"", comp=bank.querySelector("[data-filter-competition]")?.value||"", hide=bank.querySelector("[data-filter-hide-solved]")?.checked||false; let shown=0; bank.querySelectorAll(".problem-row").forEach(row=>{const ok=(!search||(row.dataset.search||"").toLowerCase().includes(search))&&(!subject||row.dataset.subject===subject)&&(!diff||row.dataset.stars===diff)&&(!comp||row.dataset.competition===comp)&&(!hide||!solved.has(canonical(row.dataset.problemId))); row.hidden=!ok;if(ok)shown++;}); const c=bank.querySelector("[data-filter-count]"); if(c)c.textContent=`${shown} problem${shown===1?"":"s"} shown`; }
-  function render() { const solved=load(); document.querySelectorAll("[data-problem-check]").forEach(cb=>{const ch=solved.has(canonical(cb.dataset.problemCheck));cb.checked=ch;cb.closest(".problem-row")?.classList.toggle("is-solved",ch);});document.querySelectorAll("[data-problem-bank]").forEach(bank=>applyTableFilter(bank,solved));updateProgress(solved); }
-  document.addEventListener("change",e=>{const cb=e.target.closest("[data-problem-check]");if(cb){const solved=load();cb.checked?solved.add(canonical(cb.dataset.problemCheck)):solved.delete(canonical(cb.dataset.problemCheck));save(solved);render();return;}if(e.target.closest("[data-filter-subject], [data-filter-difficulty], [data-filter-competition], [data-filter-hide-solved]"))render();});
+  function fill(el,items,statuses) {
+    const result=counts(items,statuses), donePct=pct(result.done,items.length), attemptedPct=pct(result.attempted,items.length);
+    el.querySelectorAll("[data-local-solved]").forEach(x=>x.textContent=result.done);
+    el.querySelectorAll("[data-local-attempted]").forEach(x=>x.textContent=result.attempted);
+    el.querySelectorAll("[data-local-total]").forEach(x=>x.textContent=items.length);
+    el.querySelectorAll("[data-local-percent]").forEach(x=>x.textContent=donePct+"%");
+    el.querySelectorAll("[data-local-bar]").forEach(x=>x.style.width=donePct+"%");
+    el.querySelectorAll("[data-local-attempted-bar]").forEach(x=>x.style.width=attemptedPct+"%");
+  }
+  function updateProgress(statuses) {
+    const result=counts(PROBLEMS,statuses), donePct=pct(result.done,PROBLEMS.length), attemptedPct=pct(result.attempted,PROBLEMS.length);
+    setText("[data-progress-solved]",result.done);
+    setText("[data-progress-attempted]",result.attempted);
+    setText("[data-progress-total]",PROBLEMS.length);
+    setText("[data-progress-percent]",donePct+"%");
+    document.querySelectorAll("[data-progress-bar]").forEach(el=>el.style.width=donePct+"%");
+    document.querySelectorAll("[data-progress-attempted-bar]").forEach(el=>el.style.width=attemptedPct+"%");
+    document.querySelectorAll("[data-progress-subject]").forEach(el=>fill(el,PROBLEMS.filter(p=>p.subject===el.dataset.progressSubject),statuses));
+    document.querySelectorAll("[data-progress-topic]").forEach(el=>{const [s,t]=el.dataset.progressTopic.split("/");fill(el,PROBLEMS.filter(p=>p.subject===s&&p.topic===t),statuses);});
+    document.querySelectorAll("[data-progress-subtopic]").forEach(el=>{const [s,t,st]=el.dataset.progressSubtopic.split("/");fill(el,PROBLEMS.filter(p=>p.subject===s&&p.topic===t&&p.subtopic===st),statuses);});
+  }
+  function prepareControls() {
+    document.querySelectorAll("[data-problem-check]").forEach(checkbox=>{
+      const button=document.createElement("button");
+      button.type="button";
+      button.className="problem-status";
+      button.dataset.problemStatus=checkbox.dataset.problemCheck;
+      checkbox.replaceWith(button);
+    });
+    document.querySelectorAll("[data-problem-bank]").forEach(bank=>{
+      const heading=bank.querySelector(".problem-table th:first-child");
+      if (heading) heading.textContent="Status";
+      const toolbar=bank.querySelector(".problem-toolbar");
+      if (toolbar && !toolbar.querySelector("[data-filter-status]")) {
+        const filter=document.createElement("select");
+        filter.dataset.filterStatus="";
+        filter.setAttribute("aria-label","Filter by problem status");
+        filter.innerHTML='<option value="">All statuses</option><option value="not-done">Not done</option><option value="attempted">Attempted</option><option value="done">Done</option>';
+        const difficulty=toolbar.querySelector("[data-filter-difficulty]");
+        toolbar.insertBefore(filter,difficulty || toolbar.firstChild);
+      }
+      const hide=bank.querySelector("[data-filter-hide-solved]");
+      if (hide && hide.parentElement) hide.parentElement.lastChild.textContent=" Hide done";
+      const count=bank.querySelector(".problem-count");
+      if (count && !bank.querySelector(".status-key")) {
+        const key=document.createElement("div");
+        key.className="status-key";
+        key.setAttribute("aria-label","Problem status colors");
+        key.innerHTML='<span><i class="status-dot status-dot--not-done"></i>Not done</span><span><i class="status-dot status-dot--attempted"></i>Attempted</span><span><i class="status-dot status-dot--done"></i>Done</span><small>Click a status to change it</small>';
+        count.before(key);
+      }
+    });
+    document.querySelectorAll(".progress-line").forEach(line=>{
+      const done=line.querySelector("[data-local-solved]"), total=line.querySelector("[data-local-total]");
+      if (done && total && !line.querySelector("[data-local-attempted]")) {
+        const stats=done.parentElement, totalValue=total.textContent;
+        stats.innerHTML=`<span data-local-solved>0</span> done · <span data-local-attempted>0</span> attempted / <span data-local-total>${totalValue}</span>`;
+      }
+      const overallDone=line.querySelector("[data-progress-solved]"), overallTotal=line.querySelector("[data-progress-total]");
+      if (overallDone && overallTotal && !line.querySelector("[data-progress-attempted]")) {
+        const stats=overallDone.parentElement, totalValue=overallTotal.textContent;
+        stats.innerHTML=`<span data-progress-solved>0</span> done · <span data-progress-attempted>0</span> attempted / <span data-progress-total>${totalValue}</span> · <span data-progress-percent>0%</span>`;
+      }
+    });
+    document.querySelectorAll(".progress-track").forEach(track=>{
+      const done=track.querySelector("[data-local-bar], [data-progress-bar]");
+      if (done && !track.querySelector("[data-local-attempted-bar], [data-progress-attempted-bar]")) {
+        const attempted=document.createElement("div");
+        attempted.className="progress-attempted-fill";
+        attempted.setAttribute(done.hasAttribute("data-progress-bar") ? "data-progress-attempted-bar" : "data-local-attempted-bar","");
+        track.append(attempted);
+      }
+    });
+    document.querySelectorAll("[data-reset-progress]").forEach(button=>button.textContent="Reset all statuses");
+  }
+  function applyTableFilter(bank,statuses) {
+    const search=(bank.querySelector("[data-filter-search]")?.value||"").trim().toLowerCase(), subject=bank.querySelector("[data-filter-subject]")?.value||"", status=bank.querySelector("[data-filter-status]")?.value||"", diff=bank.querySelector("[data-filter-difficulty]")?.value||"", comp=bank.querySelector("[data-filter-competition]")?.value||"", hide=bank.querySelector("[data-filter-hide-solved]")?.checked||false;
+    let shown=0;
+    bank.querySelectorAll(".problem-row").forEach(row=>{
+      const rowStatus=statusOf(statuses,row.dataset.problemId);
+      const ok=(!search||(row.dataset.search||"").toLowerCase().includes(search))&&(!subject||row.dataset.subject===subject)&&(!status||rowStatus===status)&&(!diff||row.dataset.stars===diff)&&(!comp||row.dataset.competition===comp)&&(!hide||rowStatus!=="done");
+      row.hidden=!ok;
+      if(ok)shown++;
+    });
+    const c=bank.querySelector("[data-filter-count]");
+    if(c)c.textContent=`${shown} problem${shown===1?"":"s"} shown`;
+  }
+  function render() {
+    const statuses=load();
+    document.querySelectorAll("[data-problem-status]").forEach(button=>{
+      const state=statusOf(statuses,button.dataset.problemStatus), next=STATES[(STATES.indexOf(state)+1)%STATES.length];
+      button.dataset.status=state;
+      button.innerHTML=`<span class="status-dot" aria-hidden="true"></span><span>${STATE_LABELS[state]}</span>`;
+      button.setAttribute("aria-label",`${STATE_LABELS[state]}. Change to ${STATE_LABELS[next]}`);
+      button.title=`Click to mark ${STATE_LABELS[next].toLowerCase()}`;
+      const row=button.closest(".problem-row");
+      if (row) {
+        row.classList.remove("is-not-done","is-attempted","is-done","is-solved");
+        row.classList.add(`is-${state}`);
+      }
+    });
+    document.querySelectorAll("[data-problem-bank]").forEach(bank=>applyTableFilter(bank,statuses));
+    updateProgress(statuses);
+  }
+  document.addEventListener("change",e=>{if(e.target.closest("[data-filter-subject], [data-filter-status], [data-filter-difficulty], [data-filter-competition], [data-filter-hide-solved]"))render();});
   document.addEventListener("input",e=>{if(e.target.closest("[data-filter-search]"))render();});
-  document.addEventListener("click",e=>{if(e.target.closest("[data-reset-progress]")){if(confirm("Clear all solved checkmarks?")){localStorage.removeItem(KEY);LEGACY_KEYS.forEach(key=>localStorage.removeItem(key));render();}}});
-  window.addEventListener("storage",e=>{if(e.key===KEY||LEGACY_KEYS.includes(e.key))render();}); document.addEventListener("DOMContentLoaded",render);
+  document.addEventListener("click",e=>{
+    const button=e.target.closest("[data-problem-status]");
+    if(button){
+      const statuses=load(), id=canonical(button.dataset.problemStatus), current=statusOf(statuses,id), next=STATES[(STATES.indexOf(current)+1)%STATES.length];
+      next === "not-done" ? statuses.delete(id) : statuses.set(id,next);
+      save(statuses);
+      render();
+      return;
+    }
+    if(e.target.closest("[data-reset-progress]")){if(confirm("Reset every problem to Not done?")){localStorage.removeItem(KEY);LEGACY_KEYS.forEach(key=>localStorage.removeItem(key));render();}}
+  });
+  window.addEventListener("storage",e=>{if(e.key===KEY||LEGACY_KEYS.includes(e.key))render();});
+  document.addEventListener("DOMContentLoaded",()=>{prepareControls();render();});
 })();
